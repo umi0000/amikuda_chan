@@ -1,0 +1,15 @@
+{
+  "collect_groups": {
+    "description": "允许采集的群",
+    "type": "list",
+    "_special": "umo",
+    "hint": "选择群聊，或粘贴从目标群 /sid 获取的 UMO，格式为 平台实例ID:GroupMessage:会话ID。不限定 SnowLuma 或 OneBot。留空不采集；保存后重载插件生效。",
+    "default": []
+  },
+  "retention_days": {
+    "description": "群消息正文保留天数",
+    "type": "int",
+    "hint": "1–366 天。过期正文会清理，已生成的报告不会自动删除。保存后重载插件生效。",
+    "default": 30
+  }
+}

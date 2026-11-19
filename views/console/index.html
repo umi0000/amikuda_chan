@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>群聊报告</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="icon-book" viewBox="0 0 24 24"><path d="M6 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2m-2 13a2 2 0 0 1 2-2h12M9 8h6m-6 3h4"/></symbol>
+    <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 21v-7h6v7"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2.5" fill="var(--tab-fill, var(--canvas))"/><circle cx="15" cy="17" r="2.5" fill="var(--tab-fill, var(--canvas))"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5m-4.4-3a8 8 0 0 1 13-3L20 9M4 15l2.4 3a8 8 0 0 0 13-3"/></symbol>
+    <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M4 11 7 5h10l3 6v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zm0 0h5l1 3h4l1-3h5"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+  </svg>
+
+  <div class="shell">
+    <header class="masthead">
+      <div class="masthead-inner">
+        <div class="identity">
+          <span class="logo"><svg class="icon" aria-hidden="true"><use href="#icon-book"/></svg></span>
+          <span>群聊报告</span>
+        </div>
+        <div class="tabs" role="tablist" aria-label="报告工作台导航">
+          <button type="button" role="tab" id="tab-home" aria-selected="true" aria-controls="home-panel"><svg class="icon" aria-hidden="true"><use href="#icon-home"/></svg>首页</button>
+          <button type="button" role="tab" id="tab-settings" aria-selected="false" aria-controls="settings-panel" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg>配置</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <div id="connection-error" class="notice banner" role="alert" hidden>
+        <span id="connection-message"></span>
+        <button type="button" id="retry-bootstrap" class="button secondary">重试</button>
+      </div>
+
+      <section id="home-panel" role="tabpanel" aria-labelledby="tab-home" tabindex="0">
+        <div class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">聊天归档 <span aria-hidden="true">/</span> 报告工作台</p>
+            <h1>群聊报告</h1>
+            <p class="hero-description">从已归档的群聊提取重点。选择群组和时段，生成的报告只在工作台中保存和查看，不会发送到群里。</p>
+            <button type="button" id="new-report" class="button primary" aria-haspopup="dialog" disabled><svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>新建报告</button>
+          </div>
+          <svg class="hero-art" viewBox="0 0 340 230" fill="none" aria-hidden="true">
+            <path class="art-orbit" d="M74 144c-40-45-43-88-8-102 37-14 106 8 159 47 53 40 70 86 40 107-26 18-83 10-139-23"/>
+            <path class="art-orbit" d="M83 183c48 20 150-5 195-56 40-46 24-78-17-81-44-4-108 23-142 50"/>
+            <path class="art-grid" d="M20 115h304M170 12v205M106 12v205M234 12v205M20 51h304M20 179h304"/>
+            <circle class="art-dot" cx="68" cy="66" r="4"/><circle class="art-dot" cx="275" cy="159" r="4"/>
+            <path class="art-star" d="M284 30v22m-11-11h22M51 150v18m-9-9h18"/>
+            <g transform="translate(106 38) rotate(11 63 77)">
+              <rect class="art-sheet-back" x="10" y="9" width="113" height="148" rx="12"/>
+              <rect class="art-sheet" x="0" y="0" width="113" height="148" rx="12"/>
+              <path class="art-line" d="M17 52h78M17 62h48m-48 56h78m-78 10h60"/>
+              <path class="art-mark" d="M19 22h16a5 5 0 0 1 5 5v2a5 5 0 0 1-5 5h-8l-6 5v-5h-2a5 5 0 0 1-5-5v-2a5 5 0 0 1 5-5Z"/>
+              <path class="art-line" d="M21 28h12"/>
+              <rect class="art-bar" x="17" y="85" width="17" height="21" rx="3"/>
+              <rect class="art-bar" x="40" y="75" width="17" height="31" rx="3"/>
+              <rect class="art-bar" x="63" y="81" width="17" height="25" rx="3"/>
+              <rect class="art-bar-emphasis" x="86" y="70" width="10" height="36" rx="3"/>
+            </g>
+          </svg>
+        </div>
+
+        <section class="card history" aria-labelledby="history-heading">
+          <header class="card-header">
+            <div>
+              <div class="section-title"><h2 id="history-heading">报告记录</h2><span class="counter" id="report-count" hidden></span></div>
+              <p>查看生成进度、报告正文和消息覆盖情况。</p>
+            </div>
+            <button type="button" id="refresh-reports" class="button secondary" disabled><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>刷新</button>
+          </header>
+          <div id="home-notice" class="home-notice" role="status" hidden></div>
+          <div id="report-error" class="notice" role="alert" hidden></div>
+          <div id="report-loading" class="list-state" role="status">正在加载报告记录…</div>
+          <div id="report-empty" class="list-state" hidden>
+            <span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#icon-inbox"/></svg></span>
+            <h3>还没有报告</h3>
+            <p>从「新建报告」开始，选择群组和时间范围。</p>
+          </div>
+          <ul id="report-list" class="report-list" aria-label="报告记录" hidden></ul>
+        </section>
+      </section>
+
+      <section id="settings-panel" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+        <div class="settings-heading">
+          <p class="eyebrow">报告工作台 <span aria-hidden="true">/</span> 生成偏好</p>
+          <h1>配置</h1>
+          <p>设置今后新建报告使用的模型和提示词。</p>
+        </div>
+        <form id="settings-form" class="card settings-card">
+          <fieldset id="settings-fields" disabled>
+            <label class="field" for="provider-id">
+              <span>报告模型</span>
+              <select id="provider-id" name="provider_id" aria-describedby="model-help"></select>
+            </label>
+            <p id="model-help" class="hint">从 AstrBot 中已经配置的聊天模型里选择。</p>
+            <label class="field" for="prompt">
+              <span>报告提示词</span>
+              <textarea id="prompt" name="prompt" rows="10" aria-describedby="prompt-help"></textarea>
+            </label>
+            <p id="prompt-help" class="hint">用自然语言描述报告的结构、关注点和写作风格。</p>
+          </fieldset>
+          <div id="settings-error" class="notice" role="alert" hidden></div>
+          <div class="settings-actions">
+            <button type="submit" id="save-settings" class="button primary" disabled>保存配置</button>
+            <span id="settings-status" class="feedback" role="status"></span>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="new-report-dialog" aria-labelledby="draft-title">
+    <form id="report-form" class="dialog-layout">
+      <header class="dialog-header">
+        <div><p class="eyebrow">报告工作台</p><h2 id="draft-title">新建报告</h2></div>
+        <button type="button" id="close-new-report" class="button icon-button" aria-label="关闭新建报告"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
+      </header>
+      <div class="dialog-body">
+        <fieldset id="draft-fields" class="draft-fields">
+          <fieldset class="group-fieldset">
+            <legend>选择群组 <span class="optional">可多选</span></legend>
+            <div class="group-search">
+              <svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg>
+              <input type="search" id="group-filter" placeholder="搜索群组" aria-label="搜索群组" autofocus>
+            </div>
+            <div id="group-options" class="group-options"></div>
+            <p id="group-empty" class="group-empty" hidden></p>
+            <p id="group-count" class="hint" role="status"></p>
+          </fieldset>
+          <div class="range-fields">
+            <label class="field" for="range-kind">
+              <span>时间范围</span>
+              <select id="range-kind" name="range_kind">
+                <option value="days">最近几天</option>
+                <option value="dates">自定义日期</option>
+                <option value="last_week">上个自然周</option>
+              </select>
+            </label>
+            <label class="field" for="range-days" id="range-days-field">
+              <span>天数</span>
+              <input id="range-days" name="range_days" type="number" value="7" min="1" max="366" step="1" inputmode="numeric" required>
+            </label>
+            <div id="range-dates-fields" class="dates-fields" hidden>
+              <label class="field" for="range-start"><span>开始日期</span><input type="date" name="range_start" id="range-start" required disabled></label>
+              <label class="field" for="range-end"><span>结束日期（含当天）</span><input type="date" name="range_end" id="range-end" required disabled></label>
+            </div>
+          </div>
+          <p class="hint">日期按北京时间（Asia/Shanghai）计算。上个自然周为上周一至上周日。</p>
+        </fieldset>
+        <p id="draft-model-note" class="notice advisory" hidden></p>
+        <p id="draft-error" class="notice" role="alert" hidden></p>
+        <section id="preview-result" class="preview-card" aria-labelledby="preview-title" hidden>
+          <div class="section-title"><h3 id="preview-title">覆盖预览</h3><span id="preview-count" class="counter"></span></div>
+          <p id="preview-range" class="hint"></p>
+          <p id="preview-note" class="notice advisory" hidden></p>
+          <div id="preview-coverage"></div>
+        </section>
+        <p id="draft-status" class="feedback" role="status"></p>
+      </div>
+      <footer class="dialog-footer">
+        <button type="button" id="preview-report" class="button secondary" disabled>预览覆盖</button>
+        <button type="submit" id="generate-report" class="button primary" disabled>生成报告</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="report-detail-dialog" aria-labelledby="detail-title">
+    <div class="dialog-layout">
+      <header class="dialog-header">
+        <div><p class="eyebrow">报告记录</p><h2 id="detail-title">报告详情</h2></div>
+        <button type="button" id="close-report-detail" class="button icon-button" aria-label="关闭报告详情" autofocus><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
+      </header>
+      <div class="dialog-body">
+        <p id="detail-loading" class="feedback" role="status" hidden>正在读取报告…</p>
+        <div id="detail-request-error" class="notice retry-notice" hidden>
+          <span id="detail-request-message" role="alert"></span><button type="button" id="retry-detail" class="button secondary">重试</button>
+        </div>
+        <div id="detail-content" hidden></div>
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>

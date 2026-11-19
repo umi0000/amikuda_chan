@@ -1,0 +1,10 @@
+name: astrbot_plugin_amikuda_chan
+display_name: 校园网答疑控制台
+desc: 按群与时间范围汇总校园网答疑消息，在 AstrBot WebUI 内查看报告。
+version: v0.1.0
+author: umi
+astrbot_version: ">=4.29.4,<5"
+views:
+  - name: console
+    target: plugin_page
+    title: 校园网答疑控制台
