@@ -16,6 +16,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api.web import error_response, json_response, request
 
 from .collection import collection_key, group_scopes
+from .history_source import HistoryReadError, read_history
 from .reporting import (
     DEFAULT_PROMPT,
     MAX_PROMPT,
@@ -72,11 +73,11 @@ def _pseudonym(secret: bytes, key: str, sender: str) -> str:
 class AmikudaChan(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        platform_types = {
+        self._platform_types = {
             platform["id"]: platform["type"]
             for platform in context.get_config().get("platform", [])
         }
-        self._groups = group_scopes(config.get("collect_groups", []), platform_types)
+        self._groups = group_scopes(config.get("collect_groups", []), self._platform_types)
         self._retention = config.get("retention_days", 30)
         if type(self._retention) is not int or not 1 <= self._retention <= 366:
             raise ValueError("正文保留天数须为 1–366 的整数。")
@@ -170,9 +171,12 @@ class AmikudaChan(Star):
         await asyncio.to_thread(self._store.save_settings, provider_id, prompt)
         return json_response({"provider_id": provider_id, "prompt": prompt})
 
-    def _selection(self, data: object, now: int) -> tuple[dict[str, str], int, int]:
+    def _selection(self, data: object, now: int) -> tuple[dict[str, str], int, int, str]:
         if not isinstance(data, dict):
             raise TypeError("报告参数无效。")
+        source = data.get("source")
+        if source not in ("plugin", "astrbot"):
+            raise ValueError("请选择消息来源：插件归档或 AstrBot 历史。")
         keys = data.get("groups")
         if not isinstance(keys, list) or not keys or len(keys) > len(self._groups):
             raise ValueError("请至少选择一个已授权采集的群。")
@@ -180,16 +184,27 @@ class AmikudaChan(Star):
             raise ValueError("请只选择当前允许采集的群。")
         groups = {key: self._groups[key] for key in keys}
         start, end = resolve_range(data.get("range"), now)
-        return groups, start, end
+        return groups, start, end, source
+
+    async def _native_snapshot(self, groups: dict[str, str], start: int, end: int, now: int):
+        return await read_history(
+            self.context.message_history_manager, groups, self._platform_types, start, end, now,
+            lambda key, sender: _pseudonym(self._secret, key, sender),
+        )
 
     async def preview(self):
         now = int(time.time())
         try:
-            groups, start, end = self._selection(await request.json(default={}), now)
+            groups, start, end, source = self._selection(await request.json(default={}), now)
+            if source == "astrbot":
+                coverage, _ = await self._native_snapshot(groups, start, end, now)
+            else:
+                coverage = await asyncio.to_thread(self._store.coverage, groups, start, end, now)
         except (TypeError, ValueError) as exc:
             return error_response(str(exc), status_code=400)
-        coverage = await asyncio.to_thread(self._store.coverage, groups, start, end, now)
-        return json_response({"start": iso(start), "end": iso(end), "count": sum(group["count"] for group in coverage), "coverage": coverage})
+        except HistoryReadError as exc:
+            return error_response(str(exc), status_code=503)
+        return json_response({"source": source, "start": iso(start), "end": iso(end), "count": sum(group["count"] for group in coverage), "coverage": coverage})
 
     async def reports(self):
         return json_response({"reports": await asyncio.to_thread(self._store.list_reports)})
@@ -205,17 +220,21 @@ class AmikudaChan(Star):
         if self._closing:
             return error_response("插件正在重载，请稍后再试。", status_code=503)
         try:
-            groups, start, end = self._selection(await request.json(default={}), now)
+            groups, start, end, source = self._selection(await request.json(default={}), now)
             settings = await asyncio.to_thread(self._store.settings, DEFAULT_PROMPT)
             provider_id = settings["provider_id"]
             provider_label = self._models().get(provider_id)
             if provider_label is None:
                 raise ValueError("请先在配置页保存一个可用的总结模型。")
+            snapshot = await self._native_snapshot(groups, start, end, now) if source == "astrbot" else None
             report, rows = await asyncio.to_thread(
                 self._store.create, groups, start, end, now, provider_id, provider_label, settings["prompt"],
+                source=source, snapshot=snapshot,
             )
         except (TypeError, ValueError) as exc:
             return error_response(str(exc), status_code=400)
+        except HistoryReadError as exc:
+            return error_response(str(exc), status_code=503)
         if self._closing:
             await asyncio.to_thread(self._store.finish, report["id"], "failed", None, "插件重载，生成已中断。")
             return error_response("插件正在重载，请稍后再试。", status_code=503)

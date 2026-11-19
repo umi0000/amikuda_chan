@@ -13,7 +13,7 @@ class GroupScopeTests(unittest.TestCase):
         sessions = {
             "telegram": "-100123456",
             "matrix": "!room_with_underscores:example.org",
-            "official": "opaque_123_456",
+            "official": "OPAQUEGROUP123456",
             "other": "123_456",
         }
         groups = group_scopes(
@@ -41,6 +41,18 @@ class GroupScopeTests(unittest.TestCase):
         self.assertEqual(list(groups), ["qq:1001"])
         self.assertEqual(collection_key("qq", "1001", "1001", groups), "qq:1001")
         self.assertIsNone(collection_key("qq", "1002", "1002", groups))
+
+    def test_official_qq_member_umos_resolve_to_authorized_group(self):
+        group = "7448B45651C15773CB392D39186A6F38"
+        for adapter in ("qq_official", "qq_official_webhook"):
+            with self.subTest(adapter=adapter):
+                scopes = group_scopes([
+                    f"xduna-bot:GroupMessage:{group}",
+                    f"xduna-bot:GroupMessage:MEMBER_A_{group}",
+                    f"xduna-bot:GroupMessage:MEMBER_B_{group}",
+                ], {"xduna-bot": adapter})
+                self.assertEqual(list(scopes), [f"xduna-bot:{group}"])
+                self.assertEqual(collection_key("xduna-bot", group, group, scopes), f"xduna-bot:{group}")
 
     def test_channel_session_does_not_collect_other_channels_in_same_guild(self):
         groups = group_scopes(["discord:GroupMessage:channel-a"], {})

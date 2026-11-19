@@ -19,12 +19,16 @@ def group_scopes(entries: list[str], platform_types: Mapping[str, str]) -> dict[
         ):
             raise ValueError("请选择群聊 UMO，格式为 平台实例ID:GroupMessage:会话ID；可从目标群的 /sid 获取。")
         platform_id, _, session_id = parts
-        # Underscores are valid IDs on other adapters; only interpret OneBot's
-        # numeric sender_group convention when the adapter type is known.
-        if platform_types.get(platform_id) == "aiocqhttp":
+        # Decode only the conventions of a known adapter, never arbitrary IDs.
+        adapter_type = platform_types.get(platform_id)
+        if adapter_type == "aiocqhttp":
             match = _ONEBOT_MEMBER_SESSION.fullmatch(session_id)
             if match:
                 session_id = match[1]
+        elif adapter_type in ("qq_official", "qq_official_webhook"):
+            sender, separator, group = session_id.rpartition("_")
+            if separator and sender and group:
+                session_id = group
         key = f"{platform_id}:{session_id}"
         if len(key) > 512:
             raise ValueError("采集群 UMO 过长。")

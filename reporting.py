@@ -106,11 +106,12 @@ async def summarize(
 ) -> str:
     groups = {group["key"]: f"G{i}" for i, group in enumerate(report["groups"], 1)}
     scope = {
+        "source": report["source"],
         "start": report["start"],
         "end_exclusive": report["end"],
         "message_count": report["count"],
         "groups": [
-            {"group": groups[group["key"]], "label": group["label"], "count": group["count"], "partial": group["partial"]}
+            {"group": groups[group["key"]], "label": group["label"], "count": group["count"], "partial": group["partial"], "note": group.get("note", "")}
             for group in report["coverage"]
         ],
     }

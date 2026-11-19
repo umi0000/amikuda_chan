@@ -8,6 +8,7 @@ const reportList = byId('report-list');
 const draftDialog = byId('new-report-dialog');
 const draftForm = byId('report-form');
 const draftFields = byId('draft-fields');
+const messageSource = byId('message-source');
 const groupFilter = byId('group-filter');
 const groupOptions = byId('group-options');
 const rangeKind = byId('range-kind');
@@ -24,7 +25,16 @@ const promptInput = byId('prompt');
 const saveButton = byId('save-settings');
 
 const statusLabels = { running: '生成中', completed: '已完成', failed: '生成失败' };
-const coverageExplanation = '覆盖情况仅表示本插件已知的采集时段，不保证包含群内的全部历史消息。';
+function coverageExplanation(source) {
+  return source === 'astrbot'
+    ? 'AstrBot 历史需要事先启用消息持久化并已有留存记录，旧记录可能按配置滚动删除，无法确认所选时段的完整性；时间按入库时间统计。引用 astrbot-<id> 中的 id 是 AstrBot 核心数据库记录 ID，不是平台消息 ID。所选来源为空或不可用时不会自动切换来源。'
+    : '插件归档仅反映本插件已知的采集时段，不保证包含群内全部历史消息；所选来源为空或不可用时不会自动切换来源。';
+}
+
+function sourceLabel(source) {
+  if (source === undefined || source === 'plugin') return '插件归档';
+  return source === 'astrbot' ? 'AstrBot 历史' : '未知来源';
+}
 const dayMs = 86_400_000;
 const zone = { timeZone: 'Asia/Shanghai' };
 const dateFormat = new Intl.DateTimeFormat('zh-CN', { ...zone, year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -130,7 +140,7 @@ function renderReports(nextReports) {
     row.dataset.reportId = report.id;
     row.setAttribute('aria-haspopup', 'dialog');
     const groups = node('span', 'report-groups', groupLabels(report.groups));
-    const metadata = node('span', 'report-meta', [timeRange(report.start, report.end, true), textCount(report.count), providerLabel(report)].join(' · '));
+    const metadata = node('span', 'report-meta', [sourceLabel(report.source), timeRange(report.start, report.end, true), textCount(report.count), providerLabel(report)].join(' · '));
     const chevron = node('span', 'report-chevron');
     chevron.setAttribute('aria-hidden', 'true');
     row.append(groups, metadata, statusBadge(report.status), chevron);
@@ -185,17 +195,20 @@ async function refreshReports() {
 
 refreshButton.addEventListener('click', () => { void refreshReports(); });
 
-function renderCoverage(coverage) {
+function renderCoverage(coverage, source) {
   if (!coverage.length) return node('p', 'hint', '没有可显示的覆盖记录。');
   const list = node('ul', 'coverage-list');
   for (const group of coverage) {
     const item = node('li', 'coverage-item');
     const title = node('div', 'coverage-heading');
     title.append(node('strong', '', group.label || group.key), node('span', 'hint', textCount(group.count)));
-    title.append(node('span', group.partial ? 'badge partial' : 'badge completed', group.partial ? '采集覆盖不完整' : '已知时段已覆盖'));
+    title.append(group.partial === null
+      ? node('span', 'badge', '完整性未知')
+      : node('span', group.partial ? 'badge partial' : 'badge completed', group.partial ? '采集覆盖不完整' : '已知时段已覆盖'));
     item.append(title);
     if (group.started_at) item.append(node('p', 'coverage-note', `开始采集：${formatMoment(group.started_at, true)}`));
-    if (group.first_at) item.append(node('p', 'coverage-note', `首条归档文本：${formatMoment(group.first_at, true)}`));
+    if (group.first_at) item.append(node('p', 'coverage-note', `${source === 'astrbot' ? '所选时段内首条留存文本（入库时间）' : '首条归档文本'}：${formatMoment(group.first_at, true)}`));
+    if (group.note) item.append(node('p', 'coverage-note', group.note));
     if (group.gaps?.length) {
       const gaps = node('details', 'coverage-gaps');
       const intervals = node('ul');
@@ -214,6 +227,7 @@ function renderDetail(report) {
   const content = byId('detail-content');
   const summary = node('dl', 'detail-meta');
   for (const [label, value] of [
+    ['消息来源', sourceLabel(report.source)],
     ['群组', report.groups.map(({ key, label }, i) => `G${i + 1}：${label || key}`).join('；')],
     ['报告模型', providerLabel(report)],
     ['时间范围（北京时间）', timeRange(report.start, report.end)],
@@ -239,7 +253,7 @@ function renderDetail(report) {
   }
 
   const coverage = node('section', 'detail-section');
-  coverage.append(node('h3', '', '消息覆盖'), node('p', 'hint', coverageExplanation), renderCoverage(report.coverage));
+  coverage.append(node('h3', '', '消息覆盖'), node('p', 'hint', coverageExplanation(report.source)), renderCoverage(report.coverage, report.source));
   const prompt = node('details', 'detail-section prompt-snapshot');
   prompt.append(node('summary', '', '本次报告使用的提示词'), node('pre', 'report-text', report.prompt || '未提供提示词。'));
   const status = statusBadge(report.status);
@@ -325,11 +339,24 @@ function providerAvailable() {
   return bootstrap?.models.some((model) => model.id === bootstrap.settings.provider_id);
 }
 
+function generationBlocker() {
+  if (creating) return '正在提交报告，请稍候。';
+  if (previewRequest) return '正在读取消息，预览完成后即可生成。';
+  if (!providerAvailable()) return '尚未保存可用的报告模型，请先到配置页选择模型并保存。';
+  if (!preview) return '请先选择群组和时间，并点击「预览覆盖」。';
+  if (!preview.count) return '所选范围没有可分析的文本，请调整来源、群组或时间。';
+  return '';
+}
+
 function updateDraftActions() {
   previewButton.disabled = !selectedGroups.size || Boolean(previewRequest) || creating;
   previewButton.textContent = previewRequest ? '预览中…' : '预览覆盖';
-  generateButton.disabled = !preview?.count || !providerAvailable() || creating;
+  const blocker = generationBlocker();
+  generateButton.disabled = Boolean(blocker);
   generateButton.textContent = creating ? '提交中…' : '生成报告';
+  generateButton.title = blocker || '按当前留存文本生成报告，不要求完整覆盖。';
+  byId('generation-hint').textContent = blocker || `可以基于 ${textCount(preview.count)} 生成报告；完整性未知或覆盖不完整只作提示，不阻止生成。`;
+  byId('configure-report-model').hidden = providerAvailable() || creating;
 }
 
 function invalidatePreview() {
@@ -353,20 +380,29 @@ function updateRangeFields() {
 
 newButton.addEventListener('click', () => {
   draftForm.reset();
+  messageSource.value = 'plugin';
+  byId('message-source-note').textContent = coverageExplanation(messageSource.value);
   selectedGroups.clear();
   previewRequest = null;
   invalidatePreview();
   updateRangeFields();
   renderGroups();
   byId('group-count').textContent = '已选 0 个群组';
-  showMessage('draft-model-note', providerAvailable() ? '' : '可以预览覆盖。生成报告前，请先到「配置」选择并保存报告模型。');
   draftDialog.showModal();
   draftDialog.querySelector('.dialog-body').scrollTop = 0;
 });
 
 byId('close-new-report').addEventListener('click', () => draftDialog.close());
 draftDialog.addEventListener('cancel', (event) => { if (creating) event.preventDefault(); });
+byId('configure-report-model').addEventListener('click', () => {
+  draftDialog.close();
+  selectTab(settingsTab, true);
+});
 groupFilter.addEventListener('input', renderGroups);
+messageSource.addEventListener('change', () => {
+  byId('message-source-note').textContent = coverageExplanation(messageSource.value);
+  invalidatePreview();
+});
 groupOptions.addEventListener('change', (event) => {
   const box = event.target;
   if (box.name !== 'group') return;
@@ -393,7 +429,7 @@ function draftPayload() {
       return null;
     }
   }
-  return { groups: [...selectedGroups], range };
+  return { source: messageSource.value, groups: [...selectedGroups], range };
 }
 
 previewButton.addEventListener('click', async () => {
@@ -409,9 +445,9 @@ previewButton.addEventListener('click', async () => {
     const result = await bridge.apiPost('preview', payload);
     if (draftVersion !== request.version || !draftDialog.open) return;
     byId('preview-count').textContent = textCount(result.count);
-    byId('preview-range').textContent = `${timeRange(result.start, result.end)} · 北京时间`;
-    showMessage('preview-note', result.count === 0 ? '所选群组和时段没有归档文本，不能生成报告。' : '');
-    byId('preview-coverage').replaceChildren(node('p', 'hint', coverageExplanation), renderCoverage(result.coverage));
+    byId('preview-range').textContent = `${sourceLabel(result.source)} · ${timeRange(result.start, result.end)} · 北京时间`;
+    showMessage('preview-note', result.count === 0 ? '所选来源、群组和时段没有留存文本，不能生成报告；不会自动切换来源。' : '');
+    byId('preview-coverage').replaceChildren(node('p', 'hint', coverageExplanation(result.source)), renderCoverage(result.coverage, result.source));
     byId('preview-result').hidden = false;
     preview = { payload, count: result.count };
     showMessage('draft-status', `覆盖预览已更新：${textCount(result.count)}。`);
@@ -431,7 +467,11 @@ previewButton.addEventListener('click', async () => {
 
 draftForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (creating || !preview?.count || !providerAvailable()) return;
+  const blocker = generationBlocker();
+  if (blocker) {
+    showMessage('draft-error', blocker);
+    return;
+  }
   creating = true;
   draftFields.disabled = true;
   byId('close-new-report').disabled = true;

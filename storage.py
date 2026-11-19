@@ -55,6 +55,7 @@ _SCHEMA = (
         groups_json TEXT NOT NULL,
         provider_id TEXT NOT NULL,
         provider_label TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'plugin',
         prompt TEXT NOT NULL,
         body TEXT,
         error TEXT,
@@ -69,7 +70,7 @@ _SCHEMA = (
         ON reports(status) WHERE status = 'running'""",
 )
 _REPORT_COLUMNS = """id, status, start_at, end_at, created_at, message_count,
-                     groups_json, provider_id, provider_label"""
+                     groups_json, provider_id, provider_label, source"""
 
 
 def _iso(value: int | None) -> str | None:
@@ -87,6 +88,7 @@ def _report_dict(row: sqlite3.Row, *, detail: bool) -> dict:
         "groups": json.loads(row["groups_json"]),
         "provider_id": row["provider_id"],
         "provider_label": row["provider_label"],
+        "source": row["source"],
     }
     if detail:
         result.update(
@@ -119,6 +121,8 @@ class Store:
         with self._transaction(write=True, initialize=True) as db:
             for statement in _SCHEMA:
                 db.execute(statement)
+            if "source" not in {row["name"] for row in db.execute("PRAGMA table_info(reports)")}:
+                db.execute("ALTER TABLE reports ADD COLUMN source TEXT NOT NULL DEFAULT 'plugin'")
             db.execute(
                 """INSERT INTO archive_settings(id, retention_days, cutoff_at)
                    VALUES (1, ?, ?)
@@ -276,23 +280,54 @@ class Store:
         provider_id: str,
         provider_label: str,
         prompt: str,
+        *,
+        source: str = "plugin",
+        snapshot: tuple[list[dict], list[dict]] | None = None,
     ) -> tuple[dict, list[dict]]:
+        if source not in ("plugin", "astrbot"):
+            raise ValueError("不支持的报告消息来源。")
+        if (source == "plugin" and snapshot is not None) or (source == "astrbot" and snapshot is None):
+            raise ValueError("报告消息快照与所选来源不匹配。")
         # Reserve the writer while reading coverage and the in-memory message snapshot.
         with self._transaction(write=True) as db:
             if db.execute("SELECT 1 FROM reports WHERE status = 'running'").fetchone():
                 raise ValueError("已有报告正在生成，请等待其结束。")
-            cutoff = self._effective_cutoff(db, now)
-            coverage = self._coverage(db, groups, start, end, now, cutoff)
-            messages = [
-                dict(row)
-                for group in coverage
-                if group["count"]
-                for row in db.execute(
-                    """SELECT group_key AS key, message_id, at, sender, text, reply_to
-                       FROM archive_messages WHERE group_key = ? AND at >= ? AND at < ?""",
-                    (group["key"], max(start, cutoff), min(end, now)),
-                )
-            ]
+            if source == "plugin":
+                cutoff = self._effective_cutoff(db, now)
+                coverage = self._coverage(db, groups, start, end, now, cutoff)
+                messages = [
+                    dict(row)
+                    for group in coverage
+                    if group["count"]
+                    for row in db.execute(
+                        """SELECT group_key AS key, message_id, at, sender, text, reply_to
+                           FROM archive_messages WHERE group_key = ? AND at >= ? AND at < ?""",
+                        (group["key"], max(start, cutoff), min(end, now)),
+                    )
+                ]
+            else:
+                assert snapshot is not None
+                coverage, messages = snapshot
+                counts = dict.fromkeys(groups, 0)
+                seen = set()
+                for group in coverage:
+                    key = group.get("key")
+                    if (key not in counts or key in seen
+                            or type(group.get("count")) is not int or group["count"] < 0):
+                        raise ValueError("报告消息快照的群组或数量不匹配。")
+                    seen.add(key)
+                if seen != groups.keys():
+                    raise ValueError("报告消息快照的群组不匹配。")
+                for row in messages:
+                    key = row.get("key")
+                    at = row.get("at")
+                    if (key not in counts or type(at) is not int
+                            or not start <= at < min(end, now)
+                            or not {"message_id", "sender", "text", "reply_to"} <= row.keys()):
+                        raise ValueError("报告消息快照包含所选群组或时间范围以外的消息。")
+                    counts[key] += 1
+                if any(group["count"] != counts[group["key"]] for group in coverage):
+                    raise ValueError("报告消息快照的消息数量不匹配。")
             if not messages:
                 raise ValueError("所选时间范围内没有可用于生成报告的留存消息。")
             messages.sort(key=lambda row: (row["at"], row["key"], row["message_id"]))
@@ -300,8 +335,8 @@ class Store:
             db.execute(
                 """INSERT INTO reports(
                        id, status, start_at, end_at, created_at, message_count, groups_json,
-                       provider_id, provider_label, prompt, coverage_json
-                   ) VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       provider_id, provider_label, prompt, coverage_json, source
+                   ) VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     report_id, start, end, now, len(messages),
                     json.dumps(
@@ -309,6 +344,7 @@ class Store:
                         ensure_ascii=False,
                     ),
                     provider_id, provider_label, prompt, json.dumps(coverage, ensure_ascii=False),
+                    source,
                 ),
             )
             report = self._get_report(db, report_id)

@@ -124,6 +124,14 @@
       </header>
       <div class="dialog-body">
         <fieldset id="draft-fields" class="draft-fields">
+          <label class="field" for="message-source">
+            <span>消息来源</span>
+            <select id="message-source" name="source" aria-describedby="message-source-note">
+              <option value="plugin" selected>插件归档</option>
+              <option value="astrbot">AstrBot 历史</option>
+            </select>
+          </label>
+          <p id="message-source-note" class="hint">插件归档仅反映本插件已知的采集时段，不保证包含群内全部历史消息；所选来源为空或不可用时不会自动切换来源。</p>
           <fieldset class="group-fieldset">
             <legend>选择群组 <span class="optional">可多选</span></legend>
             <div class="group-search">
@@ -154,7 +162,6 @@
           </div>
           <p class="hint">日期按北京时间（Asia/Shanghai）计算。上个自然周为上周一至上周日。</p>
         </fieldset>
-        <p id="draft-model-note" class="notice advisory" hidden></p>
         <p id="draft-error" class="notice" role="alert" hidden></p>
         <section id="preview-result" class="preview-card" aria-labelledby="preview-title" hidden>
           <div class="section-title"><h3 id="preview-title">覆盖预览</h3><span id="preview-count" class="counter"></span></div>
@@ -165,8 +172,12 @@
         <p id="draft-status" class="feedback" role="status"></p>
       </div>
       <footer class="dialog-footer">
+        <div class="generation-feedback">
+          <p id="generation-hint" class="hint" role="status">请先预览消息。</p>
+          <button type="button" id="configure-report-model" class="button secondary" hidden>配置模型</button>
+        </div>
         <button type="button" id="preview-report" class="button secondary" disabled>预览覆盖</button>
-        <button type="submit" id="generate-report" class="button primary" disabled>生成报告</button>
+        <button type="submit" id="generate-report" class="button primary" aria-describedby="generation-hint" disabled>生成报告</button>
       </footer>
     </form>
   </dialog>
