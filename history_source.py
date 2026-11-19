@@ -1,6 +1,6 @@
 """Read retained AstrBot group messages without copying them into the archive."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from astrbot.core.db.po import PlatformMessageHistory
@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from .collection import group_scopes
-from .reporting import SHANGHAI, iso, redact
+from .reporting import SHANGHAI, iso
 
 _HISTORY_NOTE = (
     "AstrBot 历史按配置滚动留存，无法确认所选时段的完整性；时间按入库时间统计。"
@@ -34,7 +34,7 @@ def _text(content: dict) -> str:
         text = part.get("text")
         if isinstance(text, str) and text.strip().lower() not in _MEDIA_PLACEHOLDERS:
             parts.append(text)
-    return redact("".join(parts)).strip()
+    return "".join(parts).strip()
 
 
 async def read_history(
@@ -44,7 +44,6 @@ async def read_history(
     start: int,
     end: int,
     now: int,
-    anonymize: Callable[[str, str], str],
 ) -> tuple[list[dict], list[dict]]:
     """Select authorized retained rows through AstrBot's managed DB session.
 
@@ -116,7 +115,7 @@ async def read_history(
                             "key": key,
                             "message_id": f"astrbot-{ident}",
                             "at": int(created_at.timestamp()),
-                            "sender": anonymize(key, str(sender_id or "unknown")),
+                            "sender": str(sender_id or "unknown"),
                             "text": text,
                             # Native reply segments identify platform messages, not
                             # native rows; do not fabricate a DB-row reference.

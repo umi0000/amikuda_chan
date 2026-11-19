@@ -24,7 +24,7 @@ class SourceStorageTests(unittest.TestCase):
             "first_at": "1970-01-01T00:16:41+00:00",
         }], [{
             "key": key, "message_id": "astrbot-1", "at": at,
-            "sender": "anonymous", "text": "retained text", "reply_to": None,
+            "sender": "sender-123", "text": "retained text", "reply_to": None,
         }])
 
     def create(self, **kwargs):
@@ -73,8 +73,8 @@ class SourceStorageTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 self.create(**kwargs)
         self.store.open({**self.groups, "qq:other": "Other"}, 1000, 30)
-        self.store.record("qq:other", "other", 1001, "anonymous", "not selected", None)
-        self.store.record("qq:1001", "local", 1001, "anonymous", "local text", None)
+        self.store.record("qq:other", "other", 1001, "sender-123", "not selected", None)
+        self.store.record("qq:1001", "local", 1001, "sender-123", "local text", None)
         report, rows = self.create()
         self.assertEqual(report["source"], "plugin")
         self.assertEqual([row["message_id"] for row in rows], ["local"])

@@ -1,4 +1,4 @@
-"""SQLite storage for the plugin's pseudonymized message archive and reports."""
+"""SQLite storage for the plugin's message archive and reports."""
 
 import json
 import sqlite3

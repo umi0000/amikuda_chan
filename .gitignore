@@ -5,7 +5,6 @@ __pycache__/
 *.sqlite3-shm
 *.sqlite3-wal
 *.db
-sender.key
 
 # Local tooling
 .ruff_cache/

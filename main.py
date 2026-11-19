@@ -1,13 +1,9 @@
 """AstrBot adapter for the campus-network report console."""
 
 import asyncio
-import hashlib
-import hmac
-import secrets
 import sqlite3
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -22,7 +18,6 @@ from .reporting import (
     MAX_PROMPT,
     ReportGenerationError,
     iso,
-    redact,
     resolve_range,
     summarize,
 )
@@ -32,20 +27,7 @@ PLUGIN_NAME = "astrbot_plugin_amikuda_chan"
 _HEARTBEAT_SECONDS = 30
 
 
-def _sender_secret(path: Path) -> bytes:
-    try:
-        with path.open("xb") as file:
-            path.chmod(0o600)
-            file.write(secrets.token_bytes(32))
-    except FileExistsError:
-        pass
-    secret = path.read_bytes()
-    if len(secret) != 32:
-        raise ValueError("匿名化密钥损坏；请先恢复插件数据目录。")
-    return secret
-
-
-def _message_data(event: AstrMessageEvent, key: str, secret: bytes) -> tuple[int, str, str, str | None]:
+def _message_data(event: AstrMessageEvent) -> tuple[int, str, str, str | None]:
     reply_to = None
     text = []
     has_text = False
@@ -55,19 +37,15 @@ def _message_data(event: AstrMessageEvent, key: str, secret: bytes) -> tuple[int
             has_text |= bool(component.text.strip())
         elif isinstance(component, At):
             target = str(component.qq)
-            text.append(f" @成员{_pseudonym(secret, key, target)} " if target != "all" else " @全体成员 ")
+            text.append(f" @{target} " if target != "all" else " @全体成员 ")
         elif isinstance(component, Reply) and component.id:
             reply_to = str(component.id)
-    joined = redact("".join(text)).strip() if has_text else ""
+    joined = "".join(text).strip() if has_text else ""
     raw = event.message_obj.raw_message
     at = raw.get("time") if isinstance(raw, dict) else None
     if type(at) is not int or at <= 0:
         at = event.message_obj.timestamp or int(time.time())
-    return int(at), _pseudonym(secret, key, str(event.get_sender_id())), joined, reply_to
-
-
-def _pseudonym(secret: bytes, key: str, sender: str) -> str:
-    return hmac.new(secret, f"{key}\0{sender}".encode(), hashlib.sha256).hexdigest()[:12]
+    return int(at), str(event.get_sender_id()), joined, reply_to
 
 
 class AmikudaChan(Star):
@@ -85,12 +63,10 @@ class AmikudaChan(Star):
         self._heartbeat_task: asyncio.Task | None = None
         self._closing = False
         self._store: Store
-        self._secret: bytes
 
     async def initialize(self) -> None:
         path = StarTools.get_data_dir(PLUGIN_NAME)
         path.mkdir(parents=True, exist_ok=True)
-        self._secret = await asyncio.to_thread(_sender_secret, path / "sender.key")
         self._store = Store(path / "reports.sqlite3")
         await asyncio.to_thread(self._store.open, self._groups, int(time.time()), self._retention)
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
@@ -134,7 +110,7 @@ class AmikudaChan(Star):
         message_id = event.message_obj.message_id
         if not message_id:
             return
-        at, sender, text, reply_to = _message_data(event, key, self._secret)
+        at, sender, text, reply_to = _message_data(event)
         if text:
             try:
                 await asyncio.to_thread(self._store.record, key, str(message_id), at, sender, text, reply_to)
@@ -189,7 +165,6 @@ class AmikudaChan(Star):
     async def _native_snapshot(self, groups: dict[str, str], start: int, end: int, now: int):
         return await read_history(
             self.context.message_history_manager, groups, self._platform_types, start, end, now,
-            lambda key, sender: _pseudonym(self._secret, key, sender),
         )
 
     async def preview(self):
@@ -251,7 +226,7 @@ class AmikudaChan(Star):
             text = resp.completion_text
             if not text or not text.strip():
                 raise ReportGenerationError("模型没有返回可读内容。")
-            return redact(text.strip())
+            return text.strip()
 
         ident = report["id"]
         try:

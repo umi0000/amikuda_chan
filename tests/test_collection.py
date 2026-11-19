@@ -27,7 +27,7 @@ class GroupScopeTests(unittest.TestCase):
                 key = collection_key(platform, session, session, groups)
                 self.assertIsNotNone(key)
                 self.assertEqual(key, f"{platform}:{session}")
-                store.record(key, "same-id", 1001, "anonymous", "校园网无法连接", None)
+                store.record(key, "same-id", 1001, "sender-123", "校园网无法连接", None)
             coverage = store.coverage(groups, 1000, 1003, 1003)
             self.assertTrue(all(group["count"] == 1 for group in coverage))
             self.assertIsNone(collection_key("unauthorized", "-100123456", "-100123456", groups))

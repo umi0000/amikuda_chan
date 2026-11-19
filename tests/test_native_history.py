@@ -24,6 +24,7 @@ class NativeHistoryTests(unittest.IsolatedAsyncioTestCase):
         package = types.ModuleType(package_name)
         package.__path__ = [str(Path(__file__).resolve().parents[1])]
         sys.modules[package_name] = package
+        cls.message_data = staticmethod(importlib.import_module(f"{package_name}.main")._message_data)
         cls.read_history = staticmethod(importlib.import_module(f"{package_name}.history_source").read_history)
         cls.model = PlatformMessageHistory
         cls.database = SQLiteDatabase
@@ -53,21 +54,34 @@ class NativeHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def read(self, start=1000, end=3000):
         return await self.read_history(
             self.manager, self.groups, self.types, start, end, 4000,
-            lambda _key, _sender: "anonymous",
         )
 
     async def test_reads_official_member_sessions_without_cross_group_or_private_leak(self):
         for member in ("MEMBERA", "MEMBERB"):
-            await self.insert(f"xduna-bot:GroupMessage:{member}_{self.group}")
+            await self.insert(f"xduna-bot:GroupMessage:{member}_{self.group}", text="校园网断网；账号密码是 demo value；邮件 demo@example.org")
         await self.insert("xduna-bot:GroupMessage:MEMBERA_DIFFERENTGROUP", text="wrong-group")
         await self.insert(f"xduna-bot:FriendMessage:{self.group}", text="private")
         await self.insert(f"xduna-bot:GroupMessage:MEMBERA_{self.group}", text="wrong-platform", platform="other")
         coverage, rows = await self.read()
-        self.assertEqual([row["text"] for row in rows], ["校园网断网", "校园网断网"])
+        self.assertEqual([row["text"] for row in rows], ["校园网断网；账号密码是 demo value；邮件 demo@example.org"] * 2)
         self.assertEqual(coverage[0]["count"], 2)
         self.assertIn("当前留存 2 条记录", coverage[0]["note"])
         self.assertIn("1970/01/01 08:33:20", coverage[0]["note"])
-        self.assertTrue(all(row["sender"] == "anonymous" for row in rows))
+        self.assertTrue(all(row["sender"] == "private-sender" for row in rows))
+
+    def test_live_capture_keeps_sender_mentions_and_unmodified_text(self):
+        from astrbot.core.message.components import At, Plain, Reply
+
+        original = "学号 2026123456；密码是 aa bb；邮箱 demo@example.org"
+        event = SimpleNamespace(
+            get_messages=lambda: [Plain(text=original), At(qq="member-88", name="Member"), Plain(text="继续"), Reply(id="quote-42")],
+            get_sender_id=lambda: "actual-sender-101",
+            message_obj=SimpleNamespace(raw_message={"time": 1234}, timestamp=1233),
+        )
+        self.assertEqual(
+            self.message_data(event),
+            (1234, "actual-sender-101", f"{original} @member-88 继续", "quote-42"),
+        )
 
     async def test_out_of_range_records_report_retained_time_instead_of_absence(self):
         await self.insert(f"xduna-bot:GroupMessage:MEMBERA_{self.group}")
