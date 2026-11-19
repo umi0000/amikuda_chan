@@ -45,6 +45,13 @@ _SCHEMA = (
     """CREATE INDEX IF NOT EXISTS archive_messages_group_time
         ON archive_messages(group_key, at)""",
     """CREATE INDEX IF NOT EXISTS archive_messages_time ON archive_messages(at)""",
+    """CREATE TABLE IF NOT EXISTS archive_clear_ranges (
+        group_key TEXT NOT NULL REFERENCES archive_groups(key),
+        start_at INTEGER NOT NULL,
+        end_at INTEGER NOT NULL,
+        PRIMARY KEY (group_key, start_at, end_at),
+        CHECK (start_at < end_at)
+    ) WITHOUT ROWID""",
     """CREATE TABLE IF NOT EXISTS reports (
         id TEXT PRIMARY KEY NOT NULL,
         status TEXT NOT NULL,
@@ -198,9 +205,103 @@ class Store:
                    WHERE EXISTS (SELECT 1 FROM collection_windows
                                  WHERE group_key = ? AND ended_at IS NULL)
                      AND ? >= (SELECT cutoff_at FROM archive_settings WHERE id = 1)
+                     AND NOT EXISTS (SELECT 1 FROM archive_clear_ranges
+                                     WHERE group_key = ? AND start_at <= ? AND end_at > ?)
                    ON CONFLICT(group_key, message_id) DO NOTHING""",
-                (key, message_id, at, sender, text, reply_to, key, at),
+                (key, message_id, at, sender, text, reply_to, key, at, key, at, at),
             )
+
+    def messages(
+        self, key: str, start: int | None, end: int | None, now: int,
+        cursor: dict | None, limit: int = 50,
+    ) -> dict:
+        """Read one retained page in a single snapshot; range ends are exclusive."""
+        if type(limit) is not int or limit < 1:
+            raise ValueError("消息分页数量无效。")
+        with self._transaction() as db:
+            cutoff = self._effective_cutoff(db, now)
+            left = cutoff if start is None else max(start, cutoff)
+            right = now if end is None else min(end, now)
+            parameters = [key, left, right]
+            after = ""
+            if cursor is not None:
+                at = datetime.fromisoformat(cursor["at"]).timestamp()
+                after = " AND (at < ? OR (at = ? AND message_id < ?))"
+                parameters.extend((at, at, cursor["id"]))
+            parameters.append(limit + 1)
+            rows = db.execute(
+                """SELECT message_id, at, sender, text, reply_to FROM archive_messages
+                   WHERE group_key = ? AND at >= ? AND at < ?""" + after +
+                " ORDER BY at DESC, message_id DESC LIMIT ?",
+                parameters,
+            ).fetchall()
+            has_more = len(rows) > limit
+            if has_more:
+                rows.pop()
+            messages = [
+                {"id": row["message_id"], "at": _iso(row["at"]),
+                 "sender": row["sender"], "text": row["text"],
+                 "reply_to": row["reply_to"], "role": "user"}
+                for row in rows
+            ]
+            return {
+                "messages": messages,
+                "next_cursor": (
+                    {"at": messages[-1]["at"], "id": messages[-1]["id"]}
+                    if has_more else None
+                ),
+            }
+
+    def cleanup_count(self, key: str, start: int | None, end: int, now: int) -> int:
+        with self._transaction() as db:
+            cutoff = self._effective_cutoff(db, now)
+            left = cutoff if start is None else max(start, cutoff)
+            return self._cleanup_count(db, key, left, min(end, now))
+
+    @staticmethod
+    def _cleanup_count(db: sqlite3.Connection, key: str, start: int, end: int) -> int:
+        return db.execute(
+            """SELECT COUNT(*) FROM archive_messages
+               WHERE group_key = ? AND at >= ? AND at < ?""",
+            (key, start, end),
+        ).fetchone()[0]
+
+    def cleanup(
+        self, key: str, start: int | None, end: int, now: int, expected_count: int,
+    ) -> int:
+        """Delete only a previewed group/range, preserving reports and coverage gaps."""
+        with self._transaction(write=True) as db:
+            cutoff = self._effective_cutoff(db, now)
+            left = cutoff if start is None else max(start, cutoff)
+            right = min(end, now)
+            count = self._cleanup_count(db, key, left, right)
+            if count != expected_count:
+                raise ValueError("消息数量已变化，请重新预览后再确认清理。")
+            db.execute(
+                "DELETE FROM archive_messages WHERE group_key = ? AND at >= ? AND at < ?",
+                (key, left, right),
+            )
+            if left < right and db.execute(
+                "SELECT 1 FROM archive_groups WHERE key = ?", (key,),
+            ).fetchone():
+                # Coalesce overlapping/adjacent ranges; retain no message IDs or content.
+                merged = db.execute(
+                    """SELECT MIN(start_at), MAX(end_at) FROM archive_clear_ranges
+                       WHERE group_key = ? AND start_at <= ? AND end_at >= ?""",
+                    (key, right, left),
+                ).fetchone()
+                if merged[0] is not None:
+                    left, right = min(left, merged[0]), max(right, merged[1])
+                db.execute(
+                    """DELETE FROM archive_clear_ranges
+                       WHERE group_key = ? AND start_at <= ? AND end_at >= ?""",
+                    (key, right, left),
+                )
+                db.execute(
+                    "INSERT INTO archive_clear_ranges(group_key, start_at, end_at) VALUES (?, ?, ?)",
+                    (key, left, right),
+                )
+            return count
 
     def settings(self, default_prompt: str) -> dict:
         with self._transaction() as db:
@@ -239,7 +340,7 @@ class Store:
                 "SELECT started_at FROM archive_groups WHERE key = ?", (key,)
             ).fetchone()
             gaps = []
-            cursor = start
+            covered = []
             if available_start < end:
                 # Union the plugin's local windows; none measure QQ delivery or connectivity.
                 for opened, closed in db.execute(
@@ -251,13 +352,39 @@ class Store:
                     (now, key, end, available_start),
                 ):
                     left, right = max(opened, available_start), min(closed, end)
-                    if left >= right or right <= cursor:
-                        continue
+                    if left < right:
+                        covered.append((left, right))
+                # Explicitly cleared intervals remain gaps even if their collection window is open.
+                for cleared_start, cleared_end in db.execute(
+                    """SELECT start_at, end_at FROM archive_clear_ranges
+                       WHERE group_key = ? AND start_at < ? AND end_at > ?
+                       ORDER BY start_at""",
+                    (key, end, available_start),
+                ):
+                    next_covered = []
+                    for left, right in covered:
+                        if cleared_end <= left or cleared_start >= right:
+                            next_covered.append((left, right))
+                            continue
+                        if left < cleared_start:
+                            next_covered.append((left, cleared_start))
+                        if cleared_end < right:
+                            next_covered.append((cleared_end, right))
+                    covered = next_covered
+                covered.sort()
+                merged = []
+                for left, right in covered:
+                    if merged and left <= merged[-1][1]:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+                    else:
+                        merged.append((left, right))
+                cursor = start
+                for left, right in merged:
                     if cursor < left:
                         gaps.append({"start": _iso(cursor), "end": _iso(left)})
-                    cursor = right
-                    if cursor == end:
-                        break
+                    cursor = max(cursor, right)
+            else:
+                cursor = start
             if cursor < end:
                 gaps.append({"start": _iso(cursor), "end": _iso(end)})
             result.append({

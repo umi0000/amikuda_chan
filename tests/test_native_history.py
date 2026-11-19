@@ -26,6 +26,7 @@ class NativeHistoryTests(unittest.IsolatedAsyncioTestCase):
         sys.modules[package_name] = package
         cls.message_data = staticmethod(importlib.import_module(f"{package_name}.main")._message_data)
         cls.read_history = staticmethod(importlib.import_module(f"{package_name}.history_source").read_history)
+        cls.browse_history = staticmethod(importlib.import_module(f"{package_name}.history_source").browse_history)
         cls.model = PlatformMessageHistory
         cls.database = SQLiteDatabase
 
@@ -100,6 +101,34 @@ class NativeHistoryTests(unittest.IsolatedAsyncioTestCase):
         coverage, rows = await self.read()
         self.assertEqual(rows, [])
         self.assertIn("所选时段有 2 条记录，但没有可供分析的用户文本", coverage[0]["note"])
+
+    async def test_browse_includes_bot_and_media_with_stable_same_second_pagination(self):
+        umo = f"xduna-bot:GroupMessage:MEMBERA_{self.group}"
+        await self.insert(umo, text="first")
+        await self.insert(umo, text="bot response", role="bot")
+        await self.insert(umo, at=2001, text="[image]")
+        await self.insert("xduna-bot:GroupMessage:MEMBERA_OTHERGROUP", text="wrong group")
+        await self.insert(f"xduna-bot:FriendMessage:{self.group}", text="private")
+        page = await self.browse_history(self.manager, self.key, "授权群", self.types, None, None, None, 2)
+        self.assertEqual([row["text"] for row in page["messages"]], ["[image]", "bot response"])
+        self.assertEqual(page["messages"][1]["role"], "bot")
+        await self.insert(umo, at=2500, text="newer arrival")
+        next_page = await self.browse_history(self.manager, self.key, "授权群", self.types, None, None, page["next_cursor"], 2)
+        self.assertEqual([row["text"] for row in next_page["messages"]], ["first"])
+        self.assertIsNone(next_page["next_cursor"])
+
+    async def test_browse_filters_dates_without_changing_native_history(self):
+        from sqlalchemy import func, select
+
+        umo = f"xduna-bot:GroupMessage:{self.group}"
+        await self.insert(umo, at=1999, text="before")
+        await self.insert(umo, at=2000, text="included")
+        await self.insert(umo, at=2001, text="after")
+        page = await self.browse_history(self.manager, self.key, "授权群", self.types, 2000, 2001, None)
+        self.assertEqual([row["text"] for row in page["messages"]], ["included"])
+        async with self.db.get_db() as db:
+            count = (await db.execute(select(func.count()).select_from(self.model))).scalar_one()
+        self.assertEqual(count, 3)
 
 
 if __name__ == "__main__":

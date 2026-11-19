@@ -28,6 +28,7 @@
         </div>
         <div class="tabs" role="tablist" aria-label="报告工作台导航">
           <button type="button" role="tab" id="tab-home" aria-selected="true" aria-controls="home-panel"><svg class="icon" aria-hidden="true"><use href="#icon-home"/></svg>首页</button>
+          <button type="button" role="tab" id="tab-manage" aria-selected="false" aria-controls="manage-panel" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#icon-inbox"/></svg>消息管理</button>
           <button type="button" role="tab" id="tab-settings" aria-selected="false" aria-controls="settings-panel" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg>配置</button>
         </div>
       </div>
@@ -84,6 +85,61 @@
             <p>从「新建报告」开始，选择群组和时间范围。</p>
           </div>
           <ul id="report-list" class="report-list" aria-label="报告记录" hidden></ul>
+        </section>
+      </section>
+
+      <section id="manage-panel" role="tabpanel" aria-labelledby="tab-manage" tabindex="0" hidden>
+        <div class="settings-heading">
+          <p class="eyebrow">报告工作台 <span aria-hidden="true">/</span> 留存消息</p>
+          <h1>消息管理</h1>
+          <p>按群查看留存消息；仅插件归档支持清理。所有日期和时间均为北京时间（Asia/Shanghai）。</p>
+        </div>
+        <section class="card manage-card" aria-labelledby="manage-browse-title">
+          <header class="card-header"><div><h2 id="manage-browse-title">浏览消息</h2><p>每页最多 50 条，按时间、消息 ID 从新到旧排列；不会调用模型。</p></div></header>
+          <form id="manage-form" class="manage-body">
+            <fieldset id="manage-fields" class="manage-filters" disabled>
+              <label class="field" for="manage-source"><span>消息来源</span><select id="manage-source" aria-describedby="manage-source-note"><option value="plugin">插件归档</option><option value="astrbot">AstrBot 历史</option></select></label>
+              <label class="field" for="manage-group"><span>群组（单选）</span><select id="manage-group" required><option value="">请选择群组</option></select></label>
+              <label class="field" for="manage-start"><span>浏览开始日期 <span class="optional">可选</span></span><input type="date" id="manage-start"></label>
+              <label class="field" for="manage-end"><span>浏览结束日期（含当天）<span class="optional">可选</span></span><input type="date" id="manage-end"></label>
+            </fieldset>
+            <p id="manage-source-note" class="hint">插件归档仅展示留存文本；消息时间不代表完整采集覆盖。</p>
+            <p id="manage-group-note" class="hint" role="status">正在加载可管理的群组…</p>
+            <div class="manage-actions"><button type="submit" id="manage-query" class="button primary" disabled><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg>查询消息</button><p id="manage-status" class="feedback" role="status">请选择群组后查询；日期留空表示不限制该侧时间。</p></div>
+            <p id="manage-error" class="notice" role="alert" hidden></p>
+          </form>
+          <div id="managed-result" aria-busy="false">
+            <p id="managed-empty" class="list-state" hidden>所选来源、群组和日期范围没有留存消息；不会自动切换来源。</p>
+            <ol id="managed-messages" class="managed-messages" aria-label="留存消息" hidden></ol>
+          </div>
+          <nav class="manage-pagination" aria-label="消息分页">
+            <button type="button" id="manage-prev" class="button secondary" disabled>上一页</button>
+            <span id="manage-page" class="hint" role="status">尚未查询</span>
+            <button type="button" id="manage-next" class="button secondary" disabled>下一页</button>
+          </nav>
+        </section>
+        <section class="card manage-card" aria-labelledby="cleanup-title">
+          <header class="card-header"><div><h2 id="cleanup-title">清理插件归档</h2><p>只清理当前单选群组的插件消息；已生成报告保留，AstrBot 原生存储绝不会被修改。</p></div></header>
+          <div class="manage-body">
+            <p id="cleanup-readonly" class="notice advisory" role="status" hidden>AstrBot 历史为只读来源，不支持清理。请选择插件归档以管理插件消息。</p>
+            <form id="cleanup-form">
+              <fieldset id="cleanup-fields" disabled>
+                <legend class="cleanup-legend">独立清理范围（不使用上方浏览日期）</legend>
+                <div class="manage-filters">
+                  <label class="field" for="cleanup-mode"><span>清理方式</span><select id="cleanup-mode"><option value="before">清理指定日期之前</option><option value="dates">清理指定日期区间</option></select></label>
+                  <label id="cleanup-before-field" class="field" for="cleanup-before"><span>清理此日期之前（不含当天）</span><input type="date" id="cleanup-before" required></label>
+                  <div id="cleanup-dates-fields" class="dates-fields" hidden>
+                    <label class="field" for="cleanup-start"><span>清理开始日期</span><input type="date" id="cleanup-start" required disabled></label>
+                    <label class="field" for="cleanup-end"><span>清理结束日期（含当天）</span><input type="date" id="cleanup-end" required disabled></label>
+                  </div>
+                </div>
+                <p id="cleanup-scope" class="hint">请先在上方单选一个群组。</p>
+                <div class="manage-actions"><button type="submit" id="cleanup-preview" class="button secondary" aria-haspopup="dialog" disabled>预览清理数量</button><p class="hint">预览不会删除消息；核对实际范围和数量后，还需在弹窗中明确确认。</p></div>
+              </fieldset>
+            </form>
+            <p id="cleanup-error" class="notice" role="alert" hidden></p>
+            <p id="cleanup-status" class="feedback" role="status"></p>
+          </div>
         </section>
       </section>
 
@@ -195,6 +251,22 @@
         </div>
         <div id="detail-content" hidden></div>
       </div>
+    </div>
+  </dialog>
+  <dialog id="cleanup-dialog" aria-labelledby="cleanup-dialog-title" aria-describedby="cleanup-warning">
+    <div class="dialog-layout">
+      <header class="dialog-header"><div><p class="eyebrow">插件归档</p><h2 id="cleanup-dialog-title">确认永久清理消息</h2></div></header>
+      <div class="dialog-body">
+        <p id="cleanup-warning" class="notice advisory">此操作不可撤销。仅删除以下插件归档消息，保留已生成报告，不影响 AstrBot 原生存储。</p>
+        <dl id="cleanup-summary" class="detail-meta"></dl>
+        <p class="hint">时间为北京时间（Asia/Shanghai）。预览凭证短时有效；过期或消息数量变化后必须重新预览。</p>
+        <p id="cleanup-dialog-error" class="notice" role="alert" hidden></p>
+        <p id="cleanup-dialog-status" class="feedback" role="status"></p>
+      </div>
+      <footer class="dialog-footer">
+        <button type="button" id="cleanup-cancel" class="button secondary" autofocus>取消</button>
+        <button type="button" id="cleanup-confirm" class="button danger-button" disabled>确认永久删除</button>
+      </footer>
     </div>
   </dialog>
 </body>

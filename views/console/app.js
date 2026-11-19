@@ -1,6 +1,7 @@
 const byId = (id) => document.getElementById(id);
 const bridge = window.AstrBotPluginView || window.AstrBotPluginPage;
 const homeTab = byId('tab-home');
+const manageTab = byId('tab-manage');
 const settingsTab = byId('tab-settings');
 const newButton = byId('new-report');
 const refreshButton = byId('refresh-reports');
@@ -23,6 +24,24 @@ const settingsFields = byId('settings-fields');
 const providerInput = byId('provider-id');
 const promptInput = byId('prompt');
 const saveButton = byId('save-settings');
+const manageForm = byId('manage-form');
+const manageFields = byId('manage-fields');
+const manageSource = byId('manage-source');
+const manageGroup = byId('manage-group');
+const manageStart = byId('manage-start');
+const manageEnd = byId('manage-end');
+const manageQuery = byId('manage-query');
+const managedMessages = byId('managed-messages');
+const cleanupForm = byId('cleanup-form');
+const cleanupFields = byId('cleanup-fields');
+const cleanupDialog = byId('cleanup-dialog');
+const cleanupPreviewButton = byId('cleanup-preview');
+const cleanupConfirmButton = byId('cleanup-confirm');
+const cleanupMode = byId('cleanup-mode');
+const cleanupBefore = byId('cleanup-before');
+const cleanupStart = byId('cleanup-start');
+const cleanupEnd = byId('cleanup-end');
+const tabs = [homeTab, manageTab, settingsTab];
 
 const statusLabels = { running: '生成中', completed: '已完成', failed: '生成失败' };
 function coverageExplanation(source) {
@@ -53,6 +72,13 @@ let draftVersion = 0;
 let previewRequest = null;
 let preview = null;
 const selectedGroups = new Set();
+let managedVersion = 0;
+let managedRequest = null;
+let managedPage = null;
+let cleanupVersion = 0;
+let cleanupRequest = null;
+let cleanupPreview = null;
+let cleanupDeleting = false;
 
 function node(tag, className = '', text) {
   const element = document.createElement(tag);
@@ -106,7 +132,7 @@ function groupLabels(groups) {
 }
 
 function selectTab(active, focus = false) {
-  for (const tab of [homeTab, settingsTab]) {
+  for (const tab of tabs) {
     const selected = tab === active;
     tab.setAttribute('aria-selected', String(selected));
     tab.tabIndex = selected ? 0 : -1;
@@ -115,14 +141,14 @@ function selectTab(active, focus = false) {
   if (focus) active.focus();
 }
 
-for (const tab of [homeTab, settingsTab]) {
+for (const tab of tabs) {
   tab.addEventListener('click', () => selectTab(tab));
   tab.addEventListener('keydown', (event) => {
     const destination = {
       Home: homeTab,
       End: settingsTab,
-      ArrowLeft: tab === homeTab ? settingsTab : homeTab,
-      ArrowRight: tab === homeTab ? settingsTab : homeTab,
+      ArrowLeft: tabs[(tabs.indexOf(tab) + tabs.length - 1) % tabs.length],
+      ArrowRight: tabs[(tabs.indexOf(tab) + 1) % tabs.length],
     }[event.key];
     if (!destination) return;
     event.preventDefault();
@@ -546,6 +572,253 @@ settingsForm.addEventListener('submit', async (event) => {
   }
 });
 
+function selectedManageGroup() {
+  return bootstrap?.groups.find(({ key }) => key === manageGroup.value);
+}
+
+function updateManageActions() {
+  manageFields.disabled = !bootstrap || cleanupDeleting;
+  manageQuery.disabled = !selectedManageGroup() || Boolean(managedRequest) || cleanupDeleting;
+  manageQuery.textContent = managedRequest ? '查询中…' : '查询消息';
+  byId('manage-prev').disabled = !managedPage?.previous.length || Boolean(managedRequest) || cleanupDeleting;
+  byId('manage-next').disabled = !managedPage?.next || Boolean(managedRequest) || cleanupDeleting;
+}
+
+function resetManagedPages() {
+  managedVersion += 1;
+  managedRequest = null;
+  managedPage = null;
+  managedMessages.replaceChildren();
+  managedMessages.hidden = true;
+  byId('managed-empty').hidden = true;
+  byId('manage-page').textContent = '尚未查询';
+  byId('managed-result').setAttribute('aria-busy', 'false');
+  showMessage('manage-error');
+  showMessage('manage-status', '筛选条件已更新，请点击「查询消息」。');
+  updateManageActions();
+}
+
+function renderManageGroups() {
+  const previous = manageGroup.value;
+  manageGroup.replaceChildren(new Option('请选择群组', ''), ...bootstrap.groups.map(({ key, label }) => new Option(label ? `${label}（${key}）` : key, key)));
+  manageGroup.value = bootstrap.groups.some(({ key }) => key === previous) ? previous : '';
+  byId('manage-group-note').textContent = bootstrap.groups.length
+    ? '仅显示当前获准监控的群组；每次浏览和清理均只针对一个群组。'
+    : '当前没有获准监控的群组，请在 AstrBot 插件配置中设置采集群并重载插件。';
+  resetManagedPages();
+  invalidateCleanupPreview();
+  updateCleanupControls();
+}
+
+function renderManagedMessages(messages, source) {
+  const fragment = document.createDocumentFragment();
+  for (const message of messages) {
+    const item = node('li', 'managed-message');
+    const heading = node('div', 'managed-message-heading');
+    const stamp = node('time', 'managed-time', `${source === 'astrbot' ? '入库时间' : '消息时间'}：${formatMoment(message.at, true)}`);
+    stamp.dateTime = message.at;
+    heading.append(stamp, node('span', 'managed-role', `角色：${message.role || '未知'}`));
+    item.append(heading, node('p', 'managed-meta', `发送者：${message.sender} · ID：${message.id}`), node('p', 'managed-text', message.text));
+    if (message.reply_to != null) item.append(node('p', 'managed-reply', `回复引用：${message.reply_to}`));
+    fragment.append(item);
+  }
+  managedMessages.replaceChildren(fragment);
+  managedMessages.hidden = messages.length === 0;
+  byId('managed-empty').hidden = messages.length !== 0;
+}
+
+async function fetchManagedPage(cursor = null, previous = []) {
+  if (managedRequest || cleanupDeleting || !selectedManageGroup()) return;
+  const request = { version: managedVersion };
+  const payload = { source: manageSource.value, group: manageGroup.value, start: manageStart.value, end: manageEnd.value, cursor };
+  managedRequest = request;
+  updateManageActions();
+  byId('managed-result').setAttribute('aria-busy', 'true');
+  showMessage('manage-error');
+  showMessage('manage-status', '正在读取留存消息…');
+  try {
+    const result = await bridge.apiPost('messages/query', payload);
+    if (request.version !== managedVersion || managedRequest !== request) return;
+    renderManagedMessages(result.messages, result.source);
+    managedPage = { cursor, previous, next: result.next_cursor };
+    byId('manage-page').textContent = `第 ${previous.length + 1} 页 · ${numberFormat.format(result.messages.length)} 条`;
+    showMessage('manage-status', `${sourceLabel(result.source)} · ${result.label || result.group} · 本页 ${result.messages.length} 条${result.next_cursor ? '，可继续查看下一页。' : '，已到末页。'}`);
+  } catch (error) {
+    if (request.version === managedVersion && managedRequest === request) {
+      showMessage('manage-error', `无法读取消息：${errorMessage(error)}`);
+      showMessage('manage-status', managedPage ? '翻页失败，仍保留上次成功读取的页面，可重试翻页。' : '查询失败，请重试；不会自动切换来源。');
+    }
+  } finally {
+    if (managedRequest === request) {
+      managedRequest = null;
+      byId('managed-result').setAttribute('aria-busy', 'false');
+      updateManageActions();
+    }
+  }
+}
+
+function beginManagedQuery() {
+  if (cleanupDeleting || !manageForm.reportValidity()) return;
+  resetManagedPages();
+  if (manageStart.value && manageEnd.value && manageStart.value > manageEnd.value) {
+    showMessage('manage-error', '浏览结束日期不能早于开始日期。');
+    manageEnd.focus();
+    return;
+  }
+  void fetchManagedPage();
+}
+
+function updateCleanupControls() {
+  const plugin = manageSource.value === 'plugin';
+  const group = selectedManageGroup();
+  const dates = cleanupMode.value === 'dates';
+  byId('cleanup-readonly').hidden = plugin;
+  cleanupFields.hidden = !plugin;
+  cleanupFields.disabled = !plugin || !group || Boolean(cleanupRequest) || cleanupDeleting;
+  byId('cleanup-before-field').hidden = dates;
+  byId('cleanup-dates-fields').hidden = !dates;
+  cleanupBefore.disabled = dates;
+  cleanupStart.disabled = !dates;
+  cleanupEnd.disabled = !dates;
+  byId('cleanup-scope').textContent = group
+    ? `当前清理群组：${group.label || group.key}（${group.key}）。上方浏览日期不会影响清理范围。`
+    : '请先在上方单选一个群组。';
+  cleanupPreviewButton.disabled = cleanupFields.disabled;
+  cleanupPreviewButton.textContent = cleanupRequest ? '预览中…' : '预览清理数量';
+}
+
+function invalidateCleanupPreview() {
+  cleanupVersion += 1;
+  cleanupPreview = null;
+  cleanupConfirmButton.disabled = true;
+  showMessage('cleanup-error');
+  showMessage('cleanup-status');
+  if (cleanupDialog.open && !cleanupDeleting) cleanupDialog.close();
+}
+
+function cleanupPayload() {
+  if (manageSource.value !== 'plugin' || !selectedManageGroup() || !cleanupForm.reportValidity()) return null;
+  const payload = { source: 'plugin', group: manageGroup.value, mode: cleanupMode.value };
+  if (cleanupMode.value === 'before') return { ...payload, before: cleanupBefore.value };
+  if (cleanupStart.value > cleanupEnd.value) {
+    showMessage('cleanup-error', '清理结束日期不能早于开始日期。');
+    cleanupEnd.focus();
+    return null;
+  }
+  return { ...payload, start: cleanupStart.value, end: cleanupEnd.value };
+}
+
+function cleanupSummaryItem(label, value) {
+  const item = node('div');
+  item.append(node('dt', '', label), node('dd', '', value));
+  return item;
+}
+
+cleanupForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (cleanupRequest || cleanupDeleting) return;
+  const payload = cleanupPayload();
+  if (!payload) return;
+  invalidateCleanupPreview();
+  const request = { version: cleanupVersion };
+  cleanupRequest = request;
+  updateCleanupControls();
+  showMessage('cleanup-status', '正在预览清理数量，尚未删除任何消息…');
+  try {
+    const result = await bridge.apiPost('messages/cleanup/preview', payload);
+    if (request.version !== cleanupVersion) return;
+    const range = result.start
+      ? `${formatMoment(result.start, true)}（含）至 ${formatMoment(result.end, true)}（不含）`
+      : `${formatMoment(result.end, true)} 之前（不含此时刻；起点不限）`;
+    byId('cleanup-summary').replaceChildren(
+      cleanupSummaryItem('来源', '插件归档'),
+      cleanupSummaryItem('群组', `${result.label || result.group}（${result.group}）`),
+      cleanupSummaryItem('实际清理时间范围（北京时间）', range),
+      cleanupSummaryItem('将永久删除', `${numberFormat.format(result.count)} 条消息`),
+    );
+    cleanupPreview = { token: result.token, version: request.version, count: result.count };
+    cleanupConfirmButton.disabled = result.count === 0;
+    showMessage('cleanup-dialog-error');
+    showMessage('cleanup-dialog-status', result.count ? '核对以上范围和数量后，再确认永久删除。' : '此范围没有可清理消息，无需删除。');
+    showMessage('cleanup-status', '预览完成，尚未删除任何消息。');
+    cleanupDialog.showModal();
+    byId('cleanup-cancel').focus();
+  } catch (error) {
+    if (request.version === cleanupVersion) {
+      showMessage('cleanup-error', `无法预览清理范围：${errorMessage(error)}`);
+      showMessage('cleanup-status', '请修正条件或重试预览。');
+    }
+  } finally {
+    if (cleanupRequest === request) cleanupRequest = null;
+    updateCleanupControls();
+  }
+});
+
+cleanupConfirmButton.addEventListener('click', async () => {
+  if (cleanupDeleting || !cleanupPreview?.count || cleanupPreview.version !== cleanupVersion || manageSource.value !== 'plugin') return;
+  const token = cleanupPreview.token;
+  cleanupPreview = null;
+  cleanupDeleting = true;
+  cleanupConfirmButton.disabled = true;
+  byId('cleanup-cancel').disabled = true;
+  cleanupDialog.setAttribute('aria-busy', 'true');
+  updateManageActions();
+  updateCleanupControls();
+  showMessage('cleanup-dialog-error');
+  showMessage('cleanup-dialog-status', '正在永久删除消息，请等待操作完成…');
+  let succeeded = false;
+  try {
+    const result = await bridge.apiPost('messages/cleanup', { source: 'plugin', token, confirm: true });
+    invalidatePreview();
+    showMessage('draft-status', '归档消息已清理，请重新预览覆盖后再生成报告。');
+    showMessage('cleanup-status', `已永久删除 ${numberFormat.format(result.deleted)} 条插件归档消息。已生成报告保留。`);
+    succeeded = true;
+  } catch (error) {
+    showMessage('cleanup-dialog-error', `清理未完成：${errorMessage(error)} 请取消并重新预览后再确认。`);
+    showMessage('cleanup-dialog-status', '旧预览已失效，不能再次确认。');
+    showMessage('cleanup-status', '清理未完成，需要重新预览。');
+  } finally {
+    cleanupDeleting = false;
+    byId('cleanup-cancel').disabled = false;
+    cleanupDialog.removeAttribute('aria-busy');
+    updateManageActions();
+    updateCleanupControls();
+  }
+  if (succeeded) {
+    cleanupDialog.close();
+    resetManagedPages();
+    void fetchManagedPage();
+  }
+});
+
+manageForm.addEventListener('submit', (event) => { event.preventDefault(); beginManagedQuery(); });
+for (const input of [manageSource, manageGroup, manageStart, manageEnd]) {
+  input.addEventListener(input.type === 'date' ? 'input' : 'change', () => {
+    resetManagedPages();
+    if (input === manageSource || input === manageGroup) {
+      invalidateCleanupPreview();
+      updateCleanupControls();
+    }
+    byId('manage-source-note').textContent = manageSource.value === 'astrbot'
+      ? `${coverageExplanation('astrbot')} 此处展示所有持久化记录（含机器人消息及媒体占位文本），不解析或加载外部媒体。`
+      : '插件归档仅展示留存文本；消息时间不代表完整采集覆盖。';
+  });
+}
+byId('manage-prev').addEventListener('click', () => {
+  if (!managedPage?.previous.length || managedRequest) return;
+  const previous = managedPage.previous.slice();
+  void fetchManagedPage(previous.pop(), previous);
+});
+byId('manage-next').addEventListener('click', () => {
+  if (!managedPage?.next || managedRequest) return;
+  void fetchManagedPage(managedPage.next, [...managedPage.previous, managedPage.cursor]);
+});
+cleanupMode.addEventListener('change', () => { invalidateCleanupPreview(); updateCleanupControls(); });
+for (const input of [cleanupBefore, cleanupStart, cleanupEnd]) input.addEventListener('input', invalidateCleanupPreview);
+byId('cleanup-cancel').addEventListener('click', () => { if (!cleanupDeleting) cleanupDialog.close(); });
+cleanupDialog.addEventListener('cancel', (event) => { if (cleanupDeleting) event.preventDefault(); });
+cleanupDialog.addEventListener('close', () => { cleanupPreview = null; cleanupConfirmButton.disabled = true; });
+
 async function loadBootstrap() {
   const banner = byId('connection-error');
   const retry = byId('retry-bootstrap');
@@ -553,6 +826,7 @@ async function loadBootstrap() {
   try {
     bootstrap = await bridge.apiGet('bootstrap');
     renderSettings();
+    renderManageGroups();
     banner.hidden = true;
     newButton.disabled = false;
   } catch (error) {

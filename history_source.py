@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from astrbot.core.db.po import PlatformMessageHistory
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from .collection import group_scopes
@@ -35,6 +35,17 @@ def _text(content: dict) -> str:
         if isinstance(text, str) and text.strip().lower() not in _MEDIA_PLACEHOLDERS:
             parts.append(text)
     return "".join(parts).strip()
+
+
+def _matching_group(platform_id, umo, groups, platform_types):
+    if not isinstance(umo, str) or not umo.startswith(f"{platform_id}:GroupMessage:"):
+        return None
+    try:
+        normalized = group_scopes([umo], platform_types)
+    except ValueError:
+        return None
+    key = next(iter(normalized))
+    return key if key in groups else None
 
 
 async def read_history(
@@ -69,19 +80,14 @@ async def read_history(
             )
             scopes = {}
             for platform_id, umo, count, first_at, last_at in candidates:
-                if not isinstance(umo, str) or not umo.startswith(f"{platform_id}:GroupMessage:"):
+                key = _matching_group(platform_id, umo, groups, platform_types)
+                if key is None:
                     continue
-                try:
-                    normalized = group_scopes([umo], platform_types)
-                except ValueError:
-                    continue
-                key = next(iter(normalized))
-                if key in groups:
-                    scopes[(platform_id, umo)] = key
-                    stats = retained[key]
-                    stats["count"] += count
-                    stats["first"] = min(stats["first"], first_at) if stats["first"] else first_at
-                    stats["last"] = max(stats["last"], last_at) if stats["last"] else last_at
+                scopes[(platform_id, umo)] = key
+                stats = retained[key]
+                stats["count"] += count
+                stats["first"] = min(stats["first"], first_at) if stats["first"] else first_at
+                stats["last"] = max(stats["last"], last_at) if stats["last"] else last_at
 
             for (platform_id, umo), key in scopes.items():
                 filters = [
@@ -163,3 +169,74 @@ async def read_history(
         "note": retention_note(key),
     } for key, label in groups.items()]
     return coverage, records
+
+
+def _display_message(content: dict) -> tuple[str, str | None, str]:
+    if not isinstance(content, dict):
+        return "[无可显示文本]", None, "unknown"
+    parts = []
+    reply_to = None
+    for part in content.get("message", []) if isinstance(content.get("message"), list) else []:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "plain" and isinstance(part.get("text"), str):
+            parts.append(part["text"])
+        elif kind == "at":
+            parts.append(f" @{part.get('user_id', '')} ")
+        elif kind == "reply" and part.get("message_id"):
+            reply_to = str(part["message_id"])
+        elif kind:
+            parts.append(f"[{kind}]")
+    return "".join(parts).strip() or "[无可显示文本]", reply_to, str(content.get("type", "unknown"))
+
+
+async def browse_history(manager, key, label, platform_types, start, end, cursor, limit=50):
+    """Read one authorized group's native records using a stable bounded page."""
+    history = PlatformMessageHistory
+    platform_id = key.split(":", 1)[0]
+    active = getattr(history, "is_active", None)
+    filters = [history.platform_id == platform_id]
+    if active is not None:
+        filters.append(active.is_(True))
+    try:
+        async with manager.db.get_db() as db:
+            candidates = (await db.execute(
+                select(history.user_id).where(*filters).distinct()
+            )).scalars()
+            scopes = [umo for umo in candidates if _matching_group(
+                platform_id, umo, {key: label}, platform_types,
+            ) == key]
+            if not scopes:
+                return {"messages": [], "next_cursor": None}
+            filters.append(history.user_id.in_(scopes))
+            if start is not None:
+                filters.append(history.created_at >= datetime.fromtimestamp(start, UTC))
+            if end is not None:
+                filters.append(history.created_at < datetime.fromtimestamp(end, UTC))
+            if cursor:
+                stamp = datetime.fromisoformat(cursor["at"]).astimezone(UTC)
+                ident = int(cursor["id"].removeprefix("astrbot-"))
+                filters.append(or_(
+                    history.created_at < stamp,
+                    and_(history.created_at == stamp, history.id < ident),
+                ))
+            batch = (await db.execute(
+                select(history.id, history.created_at, history.sender_id, history.content)
+                .where(*filters).order_by(history.created_at.desc(), history.id.desc())
+                .limit(limit + 1)
+            )).all()
+    except SQLAlchemyError as exc:
+        raise HistoryReadError("读取 AstrBot 持久化群聊记录失败，请检查核心版本与数据库状态。") from exc
+    messages = []
+    for ident, at, sender_id, content in batch[:limit]:
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        text, reply_to, role = _display_message(content)
+        messages.append({"id": f"astrbot-{ident}", "at": at.isoformat(),
+                         "sender": str(sender_id or "unknown"), "text": text,
+                         "reply_to": reply_to, "role": role})
+    next_cursor = None
+    if len(batch) > limit:
+        next_cursor = {"at": messages[-1]["at"], "id": messages[-1]["id"]}
+    return {"messages": messages, "next_cursor": next_cursor}

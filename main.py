@@ -1,6 +1,7 @@
 """AstrBot adapter for the campus-network report console."""
 
 import asyncio
+import secrets
 import sqlite3
 import time
 from collections.abc import Callable
@@ -12,7 +13,13 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.api.web import error_response, json_response, request
 
 from .collection import collection_key, group_scopes
-from .history_source import HistoryReadError, read_history
+from .history_source import HistoryReadError, browse_history, read_history
+from .message_management import (
+    MESSAGE_PAGE_SIZE,
+    cleanup_filters,
+    message_cursor,
+    message_filters,
+)
 from .reporting import (
     DEFAULT_PROMPT,
     MAX_PROMPT,
@@ -62,6 +69,7 @@ class AmikudaChan(Star):
         self._task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._closing = False
+        self._cleanup_previews: dict[str, dict] = {}
         self._store: Store
 
     async def initialize(self) -> None:
@@ -77,12 +85,16 @@ class AmikudaChan(Star):
             ("reports", "GET", self.reports),
             ("reports", "POST", self.create_report),
             ("reports/<report_id>", "GET", self.report),
+            ("messages/query", "POST", self.query_messages),
+            ("messages/cleanup/preview", "POST", self.preview_cleanup),
+            ("messages/cleanup", "POST", self.cleanup_messages),
         )
         for path, method, handler in routes:
             self.context.register_web_api(f"/{PLUGIN_NAME}/{path}", handler, [method], path)
 
     async def terminate(self) -> None:
         self._closing = True
+        self._cleanup_previews.clear()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             await asyncio.gather(self._heartbeat_task, return_exceptions=True)
@@ -146,6 +158,85 @@ class AmikudaChan(Star):
         prompt = prompt.strip()
         await asyncio.to_thread(self._store.save_settings, provider_id, prompt)
         return json_response({"provider_id": provider_id, "prompt": prompt})
+
+    async def query_messages(self):
+        if self._closing:
+            return error_response("插件正在重载，请稍后再试。", status_code=503)
+        data = await request.json(default={})
+        now = int(time.time())
+        try:
+            source, key, start, end = message_filters(data, self._groups, now)
+            cursor = message_cursor(data.get("cursor"), source)
+            if source == "plugin":
+                page = await asyncio.to_thread(
+                    self._store.messages, key, start, end, now, cursor, MESSAGE_PAGE_SIZE,
+                )
+            else:
+                page = await browse_history(
+                    self.context.message_history_manager, key, self._groups[key],
+                    self._platform_types, start, end, cursor, MESSAGE_PAGE_SIZE,
+                )
+        except (TypeError, ValueError) as exc:
+            return error_response(str(exc), status_code=400)
+        except HistoryReadError as exc:
+            return error_response(str(exc), status_code=503)
+        except sqlite3.Error:
+            return error_response("读取插件消息归档失败。", status_code=503)
+        return json_response({"source": source, "group": key, "label": self._groups[key], **page})
+
+    async def preview_cleanup(self):
+        if self._closing:
+            return error_response("插件正在重载，请稍后再试。", status_code=503)
+        now = int(time.time())
+        try:
+            key, start, end = cleanup_filters(await request.json(default={}), self._groups, now)
+            count = await asyncio.to_thread(self._store.cleanup_count, key, start, end, now)
+        except (TypeError, ValueError) as exc:
+            return error_response(str(exc), status_code=400)
+        except sqlite3.Error:
+            return error_response("无法预览插件归档清理范围。", status_code=503)
+        self._cleanup_previews = {
+            token: preview for token, preview in self._cleanup_previews.items()
+            if preview["expires_at"] > now
+        }
+        if len(self._cleanup_previews) >= 32:
+            self._cleanup_previews.pop(next(iter(self._cleanup_previews)))
+        token = secrets.token_urlsafe(24)
+        self._cleanup_previews[token] = {
+            "group": key, "start": start, "end": end, "count": count,
+            "owner": request.username, "expires_at": now + 300,
+        }
+        return json_response({
+            "token": token, "count": count, "group": key, "label": self._groups[key],
+            "start": iso(start) if start is not None else None, "end": iso(end),
+        })
+
+    async def cleanup_messages(self):
+        if self._closing:
+            return error_response("插件正在重载，请稍后再试。", status_code=503)
+        data = await request.json(default={})
+        now = int(time.time())
+        if not isinstance(data, dict) or data.get("source") != "plugin":
+            return error_response("仅允许清理插件归档，AstrBot 历史为只读。", status_code=400)
+        token = data.get("token")
+        if not isinstance(token, str) or data.get("confirm") is not True:
+            return error_response("请先预览清理范围并确认删除。", status_code=400)
+        preview = self._cleanup_previews.get(token)
+        if not preview or preview["owner"] != request.username or preview["expires_at"] <= now:
+            return error_response("清理预览已失效，请重新预览后确认。", status_code=409)
+        self._cleanup_previews.pop(token)
+        if preview["group"] not in self._groups:
+            return error_response("该群已不在当前监控范围内。", status_code=400)
+        try:
+            deleted = await asyncio.to_thread(
+                self._store.cleanup, preview["group"], preview["start"], preview["end"],
+                now, preview["count"],
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=409)
+        except sqlite3.Error:
+            return error_response("清理插件归档失败，请重新预览。", status_code=503)
+        return json_response({"deleted": deleted})
 
     def _selection(self, data: object, now: int) -> tuple[dict[str, str], int, int, str]:
         if not isinstance(data, dict):
